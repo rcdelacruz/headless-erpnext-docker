@@ -166,6 +166,41 @@ docker-compose restart
 # - Allocate sufficient resources (8GB+ RAM recommended)
 ```
 
+### Platform Compatibility Issues
+
+If you encounter a `no match for platform in manifest: not found` error when running on ARM64 architecture (Apple Silicon), follow these steps:
+
+1. **Update platform specification in docker-compose.yml**:
+   ```bash
+   # For all frappe/erpnext images, change:
+   platform: linux/arm64
+   
+   # To:
+   platform: linux/amd64
+   ```
+   This enables Docker's emulation layer to run amd64 images on ARM64 hardware, as the `frappe/erpnext` images currently don't have native ARM64 variants.
+
+2. **Keep native ARM64 images for supporting services**:
+   ```bash
+   # For Redis and MariaDB services, keep:
+   platform: linux/arm64
+   ```
+   This maintains native performance for database and caching services.
+
+3. **Fix Nginx configuration issues**:
+   - Ensure volume mounts for Nginx configs are read-write (remove `:ro` suffix)
+   - If you see Nginx default page instead of ERPNext login:
+     ```bash
+     # Create a hosts.conf file in nginx/conf.d with:
+     map $http_host $frappe_site_name {
+         default "erpnext.localhost";
+         "localhost:8080" "erpnext.localhost";
+     }
+     ```
+   This ensures proper hostname resolution regardless of how you access the application.
+
+4. **Note on performance**: Services running through emulation will have some performance overhead. For production environments, consider using x86_64 servers or waiting for official ARM64 images.
+
 ## Production Deployment
 
 ### Security Checklist
