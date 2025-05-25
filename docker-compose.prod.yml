@@ -1,0 +1,109 @@
+version: "3.8"
+
+# Production configuration for Headless ERPNext
+# Use this file with: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+services:
+  backend:
+    environment:
+      # Production environment
+      FRAPPE_SITE_NAME_HEADER: '${SITE_NAME:-erpnext.example.com}'
+      ENVIRONMENT: 'production'
+
+  configurator:
+    command:
+      - >
+        ls -1 apps > sites/apps.txt;
+        bench set-config -g db_host $$DB_HOST;
+        bench set-config -gp db_port $$DB_PORT;
+        bench set-config -g redis_cache "redis://$$REDIS_CACHE";
+        bench set-config -g redis_queue "redis://$$REDIS_QUEUE";
+        bench set-config -g redis_socketio "redis://$$REDIS_SOCKETIO";
+        bench set-config -gp socketio_port $$SOCKETIO_PORT;
+        echo "Configuring for production headless access...";
+        bench set-config -g allow_cors "${CORS_ORIGIN:-https://your-app.com}";
+        bench set-config -g ignore_csrf 0;
+
+  create-site:
+    command:
+      - >
+        wait-for-it -t 120 db:3306;
+        wait-for-it -t 120 redis-cache:6379;
+        wait-for-it -t 120 redis-queue:6379;
+        wait-for-it -t 120 redis-socketio:6379;
+        export start=`date +%s`;
+        until [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".db_host // empty"` ]] && \
+          [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".redis_cache // empty"` ]] && \
+          [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".redis_queue // empty"` ]];
+        do
+          echo "Waiting for sites/common_site_config.json to be created";
+          sleep 5;
+          if (( `date +%s`-start > 120 )); then
+            echo "could not find sites/common_site_config.json with required keys";
+            exit 1
+          fi
+        done;
+        echo "sites/common_site_config.json found";
+        bench new-site --no-mariadb-socket --admin-password=${ADMIN_PASSWORD} --db-root-password=${DB_ROOT_PASSWORD} --install-app erpnext --set-default ${SITE_NAME};
+        echo "Enabling production API access...";
+        bench --site ${SITE_NAME} set-config host_name "https://${SITE_NAME}";
+        bench --site ${SITE_NAME} add-to-hosts;
+
+  db:
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+    ports:
+      - "127.0.0.1:3306:3306"  # Only bind to localhost
+
+  frontend:
+    environment:
+      BACKEND: backend:8000
+      FRAPPE_SITE_NAME_HEADER: ${SITE_NAME}
+      SOCKETIO: websocket:9000
+      UPSTREAM_REAL_IP_ADDRESS: 127.0.0.1
+      UPSTREAM_REAL_IP_HEADER: X-Forwarded-For
+      UPSTREAM_REAL_IP_RECURSIVE: "on"
+      PROXY_READ_TIMEOUT: 120
+      CLIENT_MAX_BODY_SIZE: 50m
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro  # For SSL certificates
+    ports:
+      - "127.0.0.1:8080:8080"  # Only bind to localhost, use reverse proxy
+
+  websocket:
+    ports:
+      - "127.0.0.1:9000:9000"  # Only bind to localhost
+
+  # Add Redis password protection
+  redis-queue:
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    
+  redis-cache:
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    
+  redis-socketio:
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+
+# Production volumes with backup consideration
+volumes:
+  db-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/db
+  sites:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/sites
+  logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/logs
